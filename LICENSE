@@ -1,6 +1,6 @@
 MIT License
 
-Copyright (c) 2026 OneWhiteVegetable
+Copyright (c) 2026 legend-of-mortal-uncap-plus contributors
 
 Permission is hereby granted, free of charge, to any person obtaining a copy
 of this software and associated documentation files (the "Software"), to deal
@@ -19,3 +19,19 @@ AUTHORS OR COPYRIGHT HOLDERS BE LIABLE FOR ANY CLAIM, DAMAGES OR OTHER
 LIABILITY, WHETHER IN AN ACTION OF CONTRACT, TORT OR OTHERWISE, ARISING FROM,
 OUT OF OR IN CONNECTION WITH THE SOFTWARE OR THE USE OR OTHER DEALINGS IN THE
 SOFTWARE.
+
+-------------------------------------------------------------------------------
+
+NOTE / 注意:
+本许可证仅覆盖本仓库的源代码。
+The license above covers the source code in this repository only.
+
+- GigaMuscle/ 立绘素材版权归原作者所有(韩国玩家 giga_player 立绘包),
+  不随 MIT 授权;如需二次分发请自行取得原作者许可。
+  The GigaMuscle portrait assets remain the property of their original author
+  (the giga_player portrait pack) and are NOT covered by the MIT license.
+- 本 mod 依赖 BepInEx(LGPL-2.1),其运行时文件不包含在本仓库中。
+  This mod depends on BepInEx (LGPL-2.1); its runtime files are not included
+  in this repository.
+- 《活侠传》(Legend of Mortal) 游戏本体及其素材版权归 Obb Studio 所有。
+  Legend of Mortal and its assets are the property of Obb Studio.

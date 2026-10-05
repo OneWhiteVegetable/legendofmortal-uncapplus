@@ -1,4 +1,4 @@
-# legend-of-mortal-uncap-plus
+# 活侠传六维/武功上限解除 legend-of-mortal-uncap-plus
 
 《活侠传》(Legend of Mortal) 三合一 Mod:**六维/武功上限解除 · 更好的天命点分配 · 肌肉立绘联动**。
 基于 BepInEx + Harmony,运行时注入,不修改游戏任何文件;自带游戏内设置面板,所有功能独立开关。

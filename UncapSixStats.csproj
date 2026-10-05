@@ -1,0 +1,80 @@
+<Project Sdk="Microsoft.NET.Sdk">
+
+  <PropertyGroup>
+    <TargetFramework>netstandard2.0</TargetFramework>
+    <LangVersion>latest</LangVersion>
+    <AssemblyName>UncapSixStats</AssemblyName>
+    <RootNamespace>UncapSixStats</RootNamespace>
+    <Nullable>disable</Nullable>
+    <ImplicitUsings>disable</ImplicitUsings>
+    <AppendTargetFrameworkToOutputPath>false</AppendTargetFrameworkToOutputPath>
+  </PropertyGroup>
+
+  <ItemGroup>
+    <Reference Include="BepInEx">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\BepInEx\core\BepInEx.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="0Harmony">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\BepInEx\core\0Harmony.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mortal.Core">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\Mortal.Core.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Mortal.Combat">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\Mortal.Combat.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityUIExtensions">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityUIExtensions.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.CoreModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.CoreModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UI">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.UI.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.InputSystem">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\Unity.InputSystem.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.InputLegacyModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.InputLegacyModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.IMGUIModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.IMGUIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.TextRenderingModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.TextRenderingModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.Addressables">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\Unity.Addressables.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="Unity.ResourceManager">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\Unity.ResourceManager.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.ImageConversionModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.ImageConversionModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+    <Reference Include="UnityEngine.UIModule">
+      <HintPath>C:\allsoft\steam\steamapps\common\LegendOfMortal\Mortal_Data\Managed\UnityEngine.UIModule.dll</HintPath>
+      <Private>false</Private>
+    </Reference>
+  </ItemGroup>
+
+</Project>

@@ -168,7 +168,8 @@ namespace UncapSixStats
             if (stats == null || polygon == null) return true;
             RadarOverlayPulse[] pulses = RadarOverlay.EnsureAll(polygon);
             bool anyOverCap = false;
-            for (int i = 0; i < stats.Length; i++)
+            int count = Mathf.Min(stats.Length, polygon.VerticesDistances.Length);
+            for (int i = 0; i < count; i++)
             {
                 GameStat stat = stats[i];
                 float raw = (float)stat.FinalValue / stat.Max;
@@ -203,6 +204,7 @@ namespace UncapSixStats
                 return;
             }
             if (polygon == null) return;
+            if (index < 0 || index >= polygon.VerticesDistances.Length) return;
             RadarOverlayPulse[] pulses = RadarOverlay.EnsureAll(polygon);
             float raw = (float)statItem.FinalValue / max;
             float soft = Plugin.SoftMapRadar(raw);

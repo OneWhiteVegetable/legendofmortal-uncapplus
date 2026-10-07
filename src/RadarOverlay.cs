@@ -127,7 +127,7 @@ namespace UncapSixStats
         {
             if (index < 0 || index >= _baseDistances.Length) return;
             _baseDistances[index] = distance;
-            if (_polygon != null)
+            if (_polygon != null && index < _polygon.VerticesDistances.Length)
             {
                 _polygon.VerticesDistances[index] = distance;
                 _polygon.SetVerticesDirty();

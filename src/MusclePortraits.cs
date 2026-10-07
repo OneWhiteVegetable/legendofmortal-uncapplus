@@ -12,10 +12,22 @@ namespace UncapSixStats
 {
     /// <summary>
     /// 肌肉立绘联动:开关打开且任一六维(體力/內力/輕功/武功刀劍/武功暗器/武功拳掌)突破上限时,
-    /// 拦截 Addressables 的 Sprite 加载,用 GigaMuscle 目录下的同名 PNG 现场构造 Sprite 顶替;
-    /// 条件不满足(或开关关闭)时放行原版加载,掉回 100 以下自动还原。
-    /// 只加文件不改游戏任何原始资源;判定在每次立绘加载时现场进行,数值变化后下一张立绘即生效。
-    /// 反向切换(破百→回落/关闭开关)时主动把屏幕上正在显示的肌肉立绘刷回原版,不必等场景切换。
+    /// 把屏幕上显示的主角立绘换成 GigaMuscle 目录下的同名肌肉版;条件不满足(或开关关闭)时还原原版。
+    /// 只加文件不改游戏任何原始资源;判定在每次立绘赋值时现场进行,数值变化后下一张立绘即生效。
+    ///
+    /// 实现路径(纯显示层,不碰 Addressables 加载):
+    /// 1) Image.sprite 赋值拦截(ImageSpriteAssignPatch):已登记的原版立绘 ↔ 肌肉版双向即时换图;
+    ///    首次见到的原版立绘按归属界面(剧情角色 holder / 战斗状态面板)反查 key 即时登记,无闪现;
+    /// 2) Fungus 一致性补丁:GetPortrait 返回当前显示版本(防同姿势重显误隐藏),
+    ///    SetPortraitImageBySprite 查找前归一 sprite 版本(防 portraitImage=null 引发 NRE 卡死剧情);
+    /// 3) 看门狗巡检(PortraitSyncWatcher,0.5s)兜底:纠正被游戏动画/入场逻辑重设的立绘 + 补充登记;
+    /// 4) 庭院常驻立绘(路径 [UI]/MainUI/Layer_1/Avatar)与 PlayerAvatarPanel 的序列化立绘走自学习登记。
+    ///
+    /// ⚠️ 历史教训:曾经用 Harmony 补丁拦截 Addressables.LoadAssetAsync&lt;Sprite&gt;(object) 来做加载期替换,
+    /// 但 Mono 对所有引用类型 T 的泛型方法共享机器码,Harmony 补丁会把 T 烘焙成 Sprite,
+    /// 导致 LoadAssetAsync&lt;RuntimeAnimatorController&gt;(GUID) 等调用全部被劫持成按 Sprite 加载
+    /// → 团战全部单位动画控制器加载失败(InvalidKeyException)、白色方块、动画机死亡、技能卡死。
+    /// 因此:绝不补丁任何泛型方法的单个实例;加载一律放行原版,替换只发生在显示层。
     /// </summary>
     internal static class MusclePortraits
     {
@@ -27,14 +39,15 @@ namespace UncapSixStats
         private static readonly Dictionary<string, Sprite> _cache = new Dictionary<string, Sprite>(StringComparer.OrdinalIgnoreCase);
         // 反查表:我们服务出去的 Sprite → 它的 Addressables key,用于还原时定位屏幕上显示中的肌肉立绘
         private static readonly Dictionary<Sprite, string> _reverse = new Dictionary<Sprite, string>();
-        // 原版立绘实例 → key(放行原版时由补丁 postfix 登记),用于破百瞬间定位屏幕上显示中的原版立绘
+        // 原版立绘实例 → key(由看门狗从游戏数据结构中登记),用于破百瞬间定位屏幕上显示中的原版立绘
         private static readonly Dictionary<Sprite, string> _originalSprites = new Dictionary<Sprite, string>();
         // key → 原版立绘实例(还原时优先直接用,避免 Addressables 同步加载)
         private static readonly Dictionary<string, Sprite> _originalByKey = new Dictionary<string, Sprite>(StringComparer.OrdinalIgnoreCase);
         private static bool _ready;
 
-        // 诊断:已记录过的 sprite key(每个只记一次)
-        private static readonly HashSet<string> _seenKeys = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        // 剧情角色控制器类型(Mortal.Story.StoryCharacterController,反射缓存,不引用程序集)
+        private static System.Type _storyCtrlType;
+        private static bool _storyCtrlSearched;
 
         // 按帧缓存数值条件,避免每次立绘加载都遍历六次
         private static int _condFrame = -1;
@@ -131,6 +144,12 @@ namespace UncapSixStats
         internal static void InterceptAssignment(UnityEngine.UI.Image img, ref Sprite value)
         {
             if (!_ready || img == null || value == null) return;
+            // 首次见到的原版立绘:先按归属界面(剧情角色/战斗头像)反查 key 登记,
+            // 登记成功立刻就能换图 —— 不等看门狗巡检,消除"先闪原版再变肌肉"的延迟
+            if (SwitchOn && !_reverse.ContainsKey(value) && !_originalSprites.ContainsKey(value))
+            {
+                LazyRegisterFromContext(img, value);
+            }
             if (IsActiveNow())
             {
                 if (_reverse.ContainsKey(value)) return; // 已是肌肉版
@@ -158,6 +177,115 @@ namespace UncapSixStats
             }
         }
 
+        /// <summary>
+        /// 按 Image 的归属界面反查 Addressables key 并登记原版立绘(纯读取游戏数据,不碰加载):
+        /// 剧情立绘 Image 的父物体是 "{角色名} holder"(Fungus 约定),按名字找到
+        /// StoryCharacterController 后用它 Data 里的立绘映射表精确对位;
+        /// 战斗状态面板头像则取 CombatCharacterStatusUI 的 AvatarAddressKey。
+        /// </summary>
+        private static void LazyRegisterFromContext(UnityEngine.UI.Image img, Sprite sprite)
+        {
+            try
+            {
+                Transform t = img.transform;
+                while (t != null)
+                {
+                    if (TryRegisterCombatAvatar(t, sprite)) return;
+                    string n = t.name;
+                    if (n.EndsWith(" holder", StringComparison.Ordinal))
+                    {
+                        string charName = n.Substring(0, n.Length - " holder".Length);
+                        if (TryRegisterStoryPortrait(charName, sprite)) return;
+                    }
+                    t = t.parent;
+                }
+            }
+            catch { }
+        }
+
+        // 剧情立绘:角色名下立绘映射表中,文件名与 sprite 同名且 GigaMuscle 有对应文件的那个 key
+        private static bool TryRegisterStoryPortrait(string charName, Sprite sprite)
+        {
+            Component ctrl = FindStoryController(charName);
+            if (ctrl == null) return false;
+            return RegisterFromStoryController(ctrl, sprite);
+        }
+
+        private static Component FindStoryController(string gameObjectName)
+        {
+            EnsureStoryCtrlType();
+            if (_storyCtrlType == null) return null;
+            foreach (UnityEngine.Object obj in Resources.FindObjectsOfTypeAll(_storyCtrlType))
+            {
+                Component c = obj as Component;
+                if (c != null && c.gameObject.name == gameObjectName) return c;
+            }
+            return null;
+        }
+
+        private static void EnsureStoryCtrlType()
+        {
+            if (_storyCtrlSearched) return;
+            _storyCtrlSearched = true;
+            foreach (Assembly asm in AppDomain.CurrentDomain.GetAssemblies())
+            {
+                if (asm.GetName().Name == "Mortal.Story")
+                {
+                    _storyCtrlType = asm.GetType("Mortal.Story.StoryCharacterController");
+                    break;
+                }
+            }
+        }
+
+        // 从单个剧情角色控制器登记:立绘 key 的文件名 = sprite 名(游戏 LoadPortrait 的构造方式),
+        // 在角色自己的映射表范围内按文件名对位,不会撞衫。
+        // spriteFilter 非 null 时只登记这个实例(赋值拦截时的即时登记)。
+        // 注意:同一 key 的原版 Sprite 可能有多个实例(Addressables 加载 / 序列化引用各一份),
+        // 必须按实例登记,不能按 key 去重,否则剧情里的立绘实例永远登记不上。
+        private static bool RegisterFromStoryController(Component ctrl, Sprite spriteFilter)
+        {
+            bool registered = false;
+            object data = ReadMember(ctrl, "Data");
+            System.Collections.IEnumerable resourceList = ReadMember(data, "PortraitResourceList") as System.Collections.IEnumerable;
+            if (resourceList == null) return false;
+            List<Sprite> portraits = ReadMember(ctrl, "portraits") as List<Sprite>;
+            if (portraits == null) return false;
+            foreach (object item in resourceList)
+            {
+                string addressKey = ReadMember(item, "AddressKey") as string;
+                if (string.IsNullOrEmpty(addressKey) || !_availableKeys.Contains(addressKey)) continue;
+                string fileName = Path.GetFileNameWithoutExtension(addressKey);
+                Sprite sprite = portraits.Find(s => s != null && string.Equals(s.name, fileName, StringComparison.OrdinalIgnoreCase));
+                if (sprite == null) continue;
+                if (spriteFilter != null && sprite != spriteFilter) continue;
+                if (_originalSprites.ContainsKey(sprite)) continue;
+                RegisterOriginal(addressKey, sprite);
+                registered = true;
+            }
+            return registered;
+        }
+
+        // 战斗状态面板头像:CombatCharacterStatusUI._avatar + AvatarAddressKey
+        private static bool TryRegisterCombatAvatar(Transform t, Sprite sprite)
+        {
+            Mortal.Combat.CombatCharacterStatusUI ui = t.GetComponent<Mortal.Combat.CombatCharacterStatusUI>();
+            if (ui == null) return false;
+            string key = GetCombatAvatarKey(ui);
+            if (string.IsNullOrEmpty(key) || !_availableKeys.Contains(key)) return false;
+            if (!string.Equals(Path.GetFileNameWithoutExtension(key), sprite.name, StringComparison.OrdinalIgnoreCase)) return false;
+            if (_originalSprites.ContainsKey(sprite)) return true;
+            RegisterOriginal(key, sprite);
+            return true;
+        }
+
+        private static string GetCombatAvatarKey(Mortal.Combat.CombatCharacterStatusUI ui)
+        {
+            object controller = ReadMember(ui, "_actionController");
+            object stat = ReadMember(controller, "Stat");
+            object statData = ReadMember(stat, "Data");
+            return ReadMember(statData, "AvatarAddressKey") as string;
+        }
+
         /// <summary>登记一次原版立绘加载(仅 GigaMuscle 有对应文件的 key),供破百瞬间反查。</summary>
         internal static void RegisterOriginal(string key, Sprite sprite)
         {
@@ -167,11 +295,6 @@ namespace UncapSixStats
             _originalByKey[key] = sprite;
         }
 
-        internal static bool IsTrackable(object keyObj)
-        {
-            return keyObj is string key && _availableKeys.Contains(key);
-        }
-
         /// <summary>条件满足时返回指定 key 的肌肉版 Sprite,否则 null。供不走 Addressables 的序列化立绘面板使用。</summary>
         internal static Sprite GetMuscleSpriteIfActive(string key)
         {
@@ -179,6 +302,46 @@ namespace UncapSixStats
             if (!_availableKeys.Contains(key)) return null;
             if (!IsActiveNow()) return null;
             return LoadCached(key);
+        }
+
+        /// <summary>已登记的原版立绘 → 当前应显示版本(条件满足时为肌肉版,否则 null)。供 Fungus GetPortrait 补丁用。</summary>
+        internal static Sprite GetMuscleSpriteForOriginal(Sprite original)
+        {
+            if (!_ready || original == null) return null;
+            if (!IsActiveNow()) return null;
+            if (!_originalSprites.TryGetValue(original, out string key)) return null;
+            return LoadCached(key);
+        }
+
+        /// <summary>
+        /// Fungus PortraitState.SetPortraitImageBySprite 的防 NRE 修正:
+        /// 立绘在显示层被换成肌肉版后,Image.sprite 与 portraits 列表里的原版实例不再相等,
+        /// 原版按 sprite 引用查找会找不到 → portraitImage=null → Show 下一行取 .rectTransform 直接 NRE,
+        /// Lua 剧情协程随之死掉(对话卡死)。这里在查找前把 sprite 归一到当前实际显示的版本
+        /// (双向:原版↔肌肉),两个方向都兜底,翻转过渡期也不会找不到。
+        /// </summary>
+        internal static void FixPortraitLookup(object portraitState, ref Sprite sprite)
+        {
+            if (!_ready || sprite == null || portraitState == null) return;
+            List<UnityEngine.UI.Image> all = Traverse.Create(portraitState).Field("allPortraits").GetValue<List<UnityEngine.UI.Image>>();
+            if (all == null) return;
+            Sprite wanted = sprite; // ref 参数不能进 lambda
+            if (all.Exists(x => x != null && x.sprite == wanted)) return;
+            if (_originalSprites.TryGetValue(sprite, out string key))
+            {
+                Sprite muscle = LoadCached(key);
+                if (muscle != null && all.Exists(x => x != null && x.sprite == muscle))
+                {
+                    sprite = muscle;
+                    return;
+                }
+            }
+            if (_reverse.TryGetValue(sprite, out string originalKey)
+                && _originalByKey.TryGetValue(originalKey, out Sprite original) && original != null
+                && all.Exists(x => x != null && x.sprite == original))
+            {
+                sprite = original;
+            }
         }
 
         /// <summary>
@@ -285,14 +448,91 @@ namespace UncapSixStats
                 && t.parent.parent != null && t.parent.parent.name == "MainUI";
         }
 
+        // 反射读取字段或属性(沿继承链向上找),取不到返回 null
+        private static object ReadMember(object obj, string name)
+        {
+            if (obj == null) return null;
+            System.Type type = obj.GetType();
+            while (type != null)
+            {
+                FieldInfo field = type.GetField(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (field != null) return field.GetValue(obj);
+                PropertyInfo prop = type.GetProperty(name, BindingFlags.Public | BindingFlags.NonPublic | BindingFlags.Instance);
+                if (prop != null && prop.CanRead) return prop.GetValue(obj, null);
+                type = type.BaseType;
+            }
+            return null;
+        }
+
+        /// <summary>
+        /// 剧情立绘登记(看门狗兜底):遍历所有剧情角色控制器,逐个做立绘名→key 精确对位登记。
+        /// 即时登记已在 Image.sprite 赋值拦截里按归属界面完成(LazyRegisterFromContext),
+        /// 这里只是兜底(比如某些未经赋值拦截的路径),0.5s 一轮,纯读不写。
+        /// </summary>
+        private static void RegisterFromStoryControllers()
+        {
+            try
+            {
+                EnsureStoryCtrlType();
+                if (_storyCtrlType == null) return;
+                foreach (UnityEngine.Object obj in Resources.FindObjectsOfTypeAll(_storyCtrlType))
+                {
+                    try
+                    {
+                        Component ctrl = obj as Component;
+                        if (ctrl != null)
+                        {
+                            RegisterFromStoryController(ctrl, null);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
+        /// <summary>
+        /// 战斗状态面板头像登记(看门狗兜底):CombatCharacterStatusUI.Setup 用 AvatarAddressKey
+        /// 加载头像赋给 _avatar(Image)。从面板实例反查 key 与 sprite 精确登记。
+        /// </summary>
+        private static void RegisterFromCombatStatusUI()
+        {
+            try
+            {
+                foreach (Mortal.Combat.CombatCharacterStatusUI ui in Resources.FindObjectsOfTypeAll<Mortal.Combat.CombatCharacterStatusUI>())
+                {
+                    try
+                    {
+                        UnityEngine.UI.Image avatar = ReadMember(ui, "_avatar") as UnityEngine.UI.Image;
+                        if (avatar == null || avatar.sprite == null) continue;
+                        if (_reverse.ContainsKey(avatar.sprite) || _originalSprites.ContainsKey(avatar.sprite)) continue;
+                        string key = GetCombatAvatarKey(ui);
+                        if (!string.IsNullOrEmpty(key) && _availableKeys.Contains(key))
+                        {
+                            RegisterOriginal(key, avatar.sprite);
+                        }
+                    }
+                    catch { }
+                }
+            }
+            catch { }
+        }
+
         /// <summary>
         /// 看门狗式同步(由 PortraitSyncWatcher 低频调用):有些界面(如庭院常驻立绘)会被
         /// 游戏自己的动画/入场逻辑在 OnEnable 之后重新赋值,一次性的翻转刷新盖不住,
         /// 这里持续巡检所有显示中的 Image,把状态不对的立绘纠正到当前条件应有的版本。
+        /// 巡检前先跑一轮"原版立绘登记":从剧情角色控制器/战斗状态面板的数据结构里
+        /// 反查 Addressables key(加载期不拦截,key 只能在显示层事后登记)。
         /// </summary>
         internal static void SyncDisplayedPortraits()
         {
             if (!_ready) return;
+            if (SwitchOn)
+            {
+                RegisterFromStoryControllers();
+                RegisterFromCombatStatusUI();
+            }
             bool muscle = _flipLogged; // 最近一次确认的条件状态
             foreach (UnityEngine.UI.Image img in Resources.FindObjectsOfTypeAll<UnityEngine.UI.Image>())
             {
@@ -324,26 +564,6 @@ namespace UncapSixStats
                 }
                 catch { }
             }
-        }
-
-        /// <summary>尝试为 Addressables key 提供肌肉版 Sprite;不满足条件或没有对应文件时返回 false(放行原版)。</summary>
-        internal static bool TryGetSprite(object keyObj, out Sprite sprite)
-        {
-            sprite = null;
-            string key = keyObj as string;
-            if (string.IsNullOrEmpty(key)) return false;
-            // 诊断:记录所有角色立绘类 key 的真实格式(每个只记一次)
-            if (key.IndexOf("Characters", StringComparison.OrdinalIgnoreCase) >= 0 && _seenKeys.Add(key))
-            {
-                Plugin.Log.LogInfo("[Muscle][诊断] sprite key: " + key);
-            }
-            if (!_ready || !SwitchOn) return false;
-            // 快速路径:只关心角色立绘目录
-            if (!key.StartsWith("Assets/__Project/Images/Characters/", StringComparison.OrdinalIgnoreCase)) return false;
-            if (!_availableKeys.Contains(key)) return false;
-            if (!IsActiveNow()) return false;
-            sprite = LoadCached(key);
-            return sprite != null;
         }
 
         private static Sprite LoadCached(string key)
@@ -379,58 +599,6 @@ namespace UncapSixStats
     }
 
     /// <summary>
-    /// 拦截 Addressables.LoadAssetAsync&lt;Sprite&gt;(object key):
-    /// 条件满足且 GigaMuscle 有同名文件时直接返回已完成的操作(跳过原版 bundle),
-    /// 否则放行原版逻辑。对剧情立绘/战斗立绘/状态头像等所有走 Addressables 的 Sprite 生效。
-    /// </summary>
-    [HarmonyPatch]
-    internal static class MuscleSpriteLoadPatch
-    {
-        private static MethodBase TargetMethod()
-        {
-            foreach (MethodInfo method in typeof(Addressables).GetMethods(BindingFlags.Public | BindingFlags.Static))
-            {
-                if (method.Name != "LoadAssetAsync" || !method.IsGenericMethodDefinition) continue;
-                ParameterInfo[] parameters = method.GetParameters();
-                if (parameters.Length == 1 && parameters[0].ParameterType == typeof(object))
-                {
-                    return method.MakeGenericMethod(typeof(Sprite));
-                }
-            }
-            Plugin.Log.LogWarning("[Muscle] 未找到 Addressables.LoadAssetAsync<Sprite>(object) 方法,补丁未应用");
-            return null;
-        }
-
-        private static bool Prefix(object key, ref AsyncOperationHandle<Sprite> __result)
-        {
-            try
-            {
-                if (MusclePortraits.TryGetSprite(key, out Sprite sprite))
-                {
-                    __result = Addressables.ResourceManager.CreateCompletedOperation(sprite, null);
-                    return false;
-                }
-            }
-            catch (Exception e)
-            {
-                Plugin.Log.LogWarning("[Muscle] 拦截异常(放行原版): " + e.Message);
-            }
-            return true;
-        }
-
-        // 放行原版时登记 原版Sprite实例→key,供破百瞬间反查并即时替换显示中的立绘
-        private static void Postfix(object key, AsyncOperationHandle<Sprite> __result)
-        {
-            try
-            {
-                if (!MusclePortraits.IsTrackable(key)) return;
-                __result.Completed += op => MusclePortraits.RegisterOriginal(key as string, op.Result);
-            }
-            catch { }
-        }
-    }
-
-    /// <summary>
     /// 终极兜底:拦截所有 Image.sprite 赋值。庭院常驻立绘(HUD)会被游戏入场动画反复重设,
     /// 巡检/事件刷新都盖不住;直接在赋值点换图,任何来源的写入都会被纠正。
     /// 代价:每次赋值多两次字典查找,可忽略。
@@ -443,6 +611,72 @@ namespace UncapSixStats
             try
             {
                 MusclePortraits.InterceptAssignment(__instance, ref value);
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Fungus.Character.GetPortrait(string) postfix:肌肉激活且该立绘已登记时,返回肌肉版 sprite,
+    /// 让 PortraitOptions.portrait 与屏幕上 Image 实际显示的 sprite 保持同一实例。
+    /// 否则 State.portrait(实时显示的肌肉版)与 options.portrait(原版)永远不相等,
+    /// 同姿势重显会误触发 HidePortrait 把当前立绘隐藏掉(闪立绘/立绘消失)。
+    /// 非泛型方法,按名定位,不引用 Fungus 程序集。
+    /// </summary>
+    [HarmonyPatch]
+    internal static class FungusGetPortraitPatch
+    {
+        private static MethodBase TargetMethod()
+        {
+            System.Type type = System.Type.GetType("Fungus.Character, Fungus");
+            if (type == null)
+            {
+                Plugin.Log.LogWarning("[Muscle] 未找到 Fungus.Character,GetPortrait 补丁未应用");
+                return null;
+            }
+            return type.GetMethod("GetPortrait", BindingFlags.Public | BindingFlags.Instance, null, new System.Type[] { typeof(string) }, null);
+        }
+
+        private static void Postfix(ref Sprite __result)
+        {
+            try
+            {
+                if (__result == null) return;
+                Sprite muscle = MusclePortraits.GetMuscleSpriteForOriginal(__result);
+                if (muscle != null)
+                {
+                    __result = muscle;
+                }
+            }
+            catch { }
+        }
+    }
+
+    /// <summary>
+    /// Fungus.PortraitState.SetPortraitImageBySprite(Sprite) prefix:
+    /// 原版实现是 allPortraits.Find(x => x.sprite == sprite),找不到就 portraitImage=null,
+    /// 紧接着 Show() 里取 portraitImage.rectTransform 直接 NRE,Lua 剧情协程随之死掉(对话卡死)。
+    /// 立绘在显示层被换过(原版↔肌肉)时引用对不上,这里在查找前把 sprite 归一到实际显示版本。
+    /// </summary>
+    [HarmonyPatch]
+    internal static class FungusSetPortraitImagePatch
+    {
+        private static MethodBase TargetMethod()
+        {
+            System.Type type = System.Type.GetType("Fungus.PortraitState, Fungus");
+            if (type == null)
+            {
+                Plugin.Log.LogWarning("[Muscle] 未找到 Fungus.PortraitState,SetPortraitImageBySprite 补丁未应用");
+                return null;
+            }
+            return type.GetMethod("SetPortraitImageBySprite", BindingFlags.Public | BindingFlags.Instance, null, new System.Type[] { typeof(Sprite) }, null);
+        }
+
+        private static void Prefix(object __instance, ref Sprite portrait)
+        {
+            try
+            {
+                MusclePortraits.FixPortraitLookup(__instance, ref portrait);
             }
             catch { }
         }

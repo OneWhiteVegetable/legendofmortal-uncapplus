@@ -13,7 +13,7 @@ namespace UncapSixStats
     {
         public const string GUID = "com.lom.mod.uncapsixstats";
         public const string Name = "UncapSixStats";
-        public const string Version = "2.0.0";
+        public const string Version = "2.0.1";
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -38,11 +38,18 @@ namespace UncapSixStats
         // 天命分配破限变色:突破原设计上限后数值改为此色(与雷达破限层同基调的金色)
         internal static readonly Color FateOverCapColor = new Color(1.0f, 0.84f, 0.30f);
 
-        // 體力=0 內力=1 輕功=2(武功类按 PropertyType.武功 整体解除)
+        // 體力=0 內力=1 輕功=2
         internal static readonly HashSet<int> BaseUncapTypes = new HashSet<int> { 0, 1, 2 };
         internal static readonly HashSet<int> ExtraTypes = new HashSet<int>();
         // 天命分配扩展解限:銀兩=3 鍛造=17 毒藥(煉丹)=18 武學點數=31
         internal static readonly HashSet<int> FateExtraTypes = new HashSet<int>();
+
+        // 全部武功类 StatType:刀劍100 暗器101 拳掌102 腿法103 奇門104 軟兵器105 槍棍106 內功107。
+        // 注意:这些资产的 PropertyType 序列化值实为「一般」而非「武功」,不能靠 PropertyType 判定。
+        internal static bool IsMartialStatType(int typeId)
+        {
+            return typeId >= 100 && typeId <= 107;
+        }
 
         private static SynchronizationContext _mainThread;
         private int _tickCount;
@@ -126,7 +133,7 @@ namespace UncapSixStats
             _mainThread = SynchronizationContext.Current;
             HotkeyThread.Start();
 
-            Log.LogInfo("[UncapSixStats] v2.0.0 已加载。取消上限名单:體力/內力/輕功/全部武功类"
+            Log.LogInfo("[UncapSixStats] v" + Version + " 已加载。取消上限名单:體力/內力/輕功/全部武功类(StatType 100-107)"
                 + (ExtraTypes.Count > 0 ? " + 额外ID:" + string.Join(",", ExtraTypes) : "")
                 + (FateTweakSwitch.Value ? " | 天命分配破限ID:" + string.Join(",", FateExtraTypes) : ""));
             Log.LogInfo($"[UncapSixStats] 补丁应用:{applied} 类成功" +
@@ -209,6 +216,7 @@ namespace UncapSixStats
             // 否则破限部分会在开新周目/读档时丢失。
             if (FateTweakSwitch.Value && FateExtraTypes.Contains(typeId)) return true;
             if (!Enabled.Value) return false;
+            if (IsMartialStatType(typeId)) return true;
             if (stat.PropertyType == Mortal.Core.GameStatPropertyType.武功) return true;
             return BaseUncapTypes.Contains(typeId) || ExtraTypes.Contains(typeId);
         }
@@ -217,8 +225,9 @@ namespace UncapSixStats
         internal static bool IsSixStatUncapped(Mortal.Core.GameStat stat)
         {
             if (!Enabled.Value || stat == null) return false;
-            if (stat.PropertyType == Mortal.Core.GameStatPropertyType.武功) return true;
             int typeId = (int)stat.StatType;
+            if (IsMartialStatType(typeId)) return true;
+            if (stat.PropertyType == Mortal.Core.GameStatPropertyType.武功) return true;
             return BaseUncapTypes.Contains(typeId) || ExtraTypes.Contains(typeId);
         }
 

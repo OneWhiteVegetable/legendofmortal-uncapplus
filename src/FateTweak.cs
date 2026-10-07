@@ -432,6 +432,21 @@ namespace UncapSixStats
                 }
             }
         }
+
+        // 目标页签的内容列表是否已构建(0=属性 1=人际 2=门派)
+        internal static bool PanelListReady(Traverse t, int index)
+        {
+            string field;
+            switch (index)
+            {
+                case 0: field = "_propertyList"; break;
+                case 1: field = "_socialList"; break;
+                case 2: field = "_flagList"; break;
+                default: return false;
+            }
+            System.Collections.ICollection list = t.Field(field).GetValue<System.Collections.ICollection>();
+            return list != null && list.Count > 0;
+        }
     }
 
     // ============================ Harmony 补丁 ============================
@@ -616,10 +631,23 @@ namespace UncapSixStats
         {
             if (!FateTweak.On) return true;
             // 三页自由切换:去掉"本页有未确认点数"的拦截
-            Traverse t = Traverse.Create(__instance);
-            t.Method("ShowPanel", index).GetValue();
-            t.Method("ToggleMenuButton", index).GetValue();
-            t.Field("_currentTab").SetValue(index);
+            try
+            {
+                Traverse t = Traverse.Create(__instance);
+                // 面板刚激活(ToggleGroup.OnEnable 阶段)时列表可能还没构建,
+                // 此时 ShowPanel 会经事件走到 SetPropertySelected 对空表取 [0] 越界;
+                // 列表没好就只记页签,显示交给游戏自己的初始化流程
+                if (FateTweak.PanelListReady(t, index))
+                {
+                    t.Method("ShowPanel", index).GetValue();
+                    t.Method("ToggleMenuButton", index).GetValue();
+                }
+                t.Field("_currentTab").SetValue(index);
+            }
+            catch (System.Exception e)
+            {
+                Plugin.Log.LogWarning("[天命] 页签切换异常:" + e.Message);
+            }
             return false;
         }
     }

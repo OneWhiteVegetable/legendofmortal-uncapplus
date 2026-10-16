@@ -42,16 +42,25 @@ namespace UncapSixStats
 
     /// <summary>
     /// 1. 练功/事件加点入口:名单内属性不再钳到 _max,保留下界、累加器和变更事件。
+    ///    命中自定义上限覆盖(如貢獻度20→500)的按覆盖上限钳。
     /// </summary>
     [HarmonyPatch(typeof(GameStat), nameof(GameStat.AddValue))]
     internal static class GameStatAddValuePatch
     {
         private static bool Prefix(GameStat __instance, int value, bool totalAdd)
         {
-            if (!Plugin.IsUncapped(__instance)) return true;
+            bool uncapped = Plugin.IsUncapped(__instance);
+            int overrideMax = 0;
+            bool overridden = !uncapped && Plugin.TryGetMaxOverride(__instance, out overrideMax);
+            if (!uncapped && !overridden) return true;
             Traverse traverse = Traverse.Create(__instance);
             int oldValue = traverse.Field("_value").GetValue<int>();
             int newValue = oldValue + value;
+            int upper = uncapped ? int.MaxValue : overrideMax;
+            if (newValue > upper)
+            {
+                newValue = upper;
+            }
             if (newValue < __instance.Min)
             {
                 newValue = __instance.Min;
@@ -84,10 +93,17 @@ namespace UncapSixStats
     {
         private static bool Prefix(GameStat __instance, int value)
         {
-            if (!Plugin.IsUncapped(__instance)) return true;
+            bool uncapped = Plugin.IsUncapped(__instance);
+            int overrideMax = 0;
+            bool overridden = !uncapped && Plugin.TryGetMaxOverride(__instance, out overrideMax);
+            if (!uncapped && !overridden) return true;
             Traverse traverse = Traverse.Create(__instance);
             int oldValue = traverse.Field("_value").GetValue<int>();
             int newValue = value < __instance.Min ? __instance.Min : value;
+            if (overridden && newValue > overrideMax)
+            {
+                newValue = overrideMax;
+            }
             traverse.Field("_value").SetValue(newValue);
             traverse.Method("RaiseValueChangedEvent", oldValue, newValue).GetValue();
             return false;
@@ -113,16 +129,26 @@ namespace UncapSixStats
     }
 
     /// <summary>
-    /// 3. FinalValue 读取:名单内属性去掉上界(保留加成、保留下界)。
+    /// 3. FinalValue 读取:名单内属性去掉上界(保留加成、保留下界);
+    ///    命中自定义上限覆盖的按覆盖上限钳(_limitAddition 保留)。
     /// </summary>
     [HarmonyPatch(typeof(GameStat), nameof(GameStat.FinalValue), MethodType.Getter)]
     internal static class GameStatFinalValuePatch
     {
         private static void Postfix(GameStat __instance, ref int __result)
         {
-            if (!Plugin.IsUncapped(__instance)) return;
+            bool uncapped = Plugin.IsUncapped(__instance);
+            int overrideMax = 0;
+            bool overridden = !uncapped && Plugin.TryGetMaxOverride(__instance, out overrideMax);
+            if (!uncapped && !overridden) return;
             int baseValue = Traverse.Create(__instance).Field("_value").GetValue<int>();
-            __result = System.Math.Max(baseValue + __instance.AdditionValue, __instance.Min);
+            if (uncapped)
+            {
+                __result = System.Math.Max(baseValue + __instance.AdditionValue, __instance.Min);
+                return;
+            }
+            int limitAddition = Traverse.Create(__instance).Field("_limitAddition").GetValue<int>();
+            __result = Mathf.Clamp(baseValue + __instance.AdditionValue, __instance.Min, overrideMax + limitAddition);
         }
     }
 
@@ -189,26 +215,39 @@ namespace UncapSixStats
     }
 
     /// <summary>
-    /// 6. 战斗面板雷达图:原版 Clamp01 削平,改为同样的双层结构(白层贴框 + 金色破限层)。
+    /// 6. 战斗面板雷达图(2026-10-15 新版签名):官方新增 _statRadar2 画 100~200 的溢出部分,
+    ///    与 mod 的对数压缩破限层二选一 —— 主雷达仍由 mod 软映射+金色破限层,
+    ///    官方第二雷达压制为 0,避免同一溢出画两遍。
     /// </summary>
     [HarmonyPatch(typeof(CombatCharacterStatusUI), "SetRadarStat")]
     internal static class CombatRadarPatch
     {
-        private static void Postfix(CombatCharacterStatusUI __instance, CombatStatItem statItem, int max, int index)
+        private static void Postfix(CombatCharacterStatusUI __instance, int value, UIPolygon radar, int max, int index)
         {
-            UIPolygon polygon = Traverse.Create(__instance).Field("_statRadar").GetValue<UIPolygon>();
+            Traverse traverse = Traverse.Create(__instance);
+            UIPolygon main = traverse.Field("_statRadar").GetValue<UIPolygon>();
+            UIPolygon second = traverse.Field("_statRadar2").GetValue<UIPolygon>();
+            if (second != null && radar == second)
+            {
+                // 官方溢出层:mod 开启时压制(mod 破限层接管),关闭时放行原版
+                if (Plugin.Enabled.Value && index >= 0 && index < radar.VerticesDistances.Length)
+                {
+                    radar.VerticesDistances[index] = 0f;
+                }
+                return;
+            }
+            if (main == null || radar != main) return;
             if (!Plugin.Enabled.Value)
             {
                 // 总开关关闭:把已存在的破限层藏起来(只查不建)
-                RadarOverlay.SetOverCap(RadarOverlay.FindAll(polygon), false);
+                RadarOverlay.SetOverCap(RadarOverlay.FindAll(main), false);
                 return;
             }
-            if (polygon == null) return;
-            if (index < 0 || index >= polygon.VerticesDistances.Length) return;
-            RadarOverlayPulse[] pulses = RadarOverlay.EnsureAll(polygon);
-            float raw = (float)statItem.FinalValue / max;
+            if (index < 0 || index >= main.VerticesDistances.Length) return;
+            RadarOverlayPulse[] pulses = RadarOverlay.EnsureAll(main);
+            float raw = max > 0 ? (float)value / max : 0f;
             float soft = Plugin.SoftMapRadar(raw);
-            polygon.VerticesDistances[index] = Mathf.Clamp(soft, 0.02f, 1f);
+            main.VerticesDistances[index] = Mathf.Clamp(soft, 0.02f, 1f);
             // UpdateRadarStat 按 index 0→5 顺序刷新,0 时重置累计标记
             if (index == 0)
             {
@@ -223,53 +262,87 @@ namespace UncapSixStats
     }
 
     /// <summary>
-    /// 7a. 命运点加点执行:名单内属性去掉 "Max-初始值" 的预钳制,可以点过 100。
-    ///     FateTweak 开启后由 FateTweak 接管(立即落实,没有 Save 环节),这里直接 no-op,
-    ///     防止原版 ModifyExecute 把破限值钳回 Max。
+    /// 7. 左侧数值变动白条:原版显示的"新值"按 Max 钳制(破限后仍显示 100)。
+    ///    这里在 Setup 后把数值文本改成真实新值;进度条(fillAmount)保持原版钳制不动。
+    ///    命中自定义上限覆盖(貢獻度→500)的按覆盖上限显示。
     /// </summary>
-    [HarmonyPatch(typeof(FateBonusProperty), nameof(FateBonusProperty.ModifyExecute))]
-    internal static class FateModifyExecutePatch
+    [HarmonyPatch(typeof(NormalStatModification), nameof(NormalStatModification.Setup))]
+    internal static class StatModificationDisplayPatch
     {
-        private static bool Prefix(FateBonusProperty __instance)
+        private static void Postfix(NormalStatModification __instance, GameStat stat, int addValue)
         {
-            if (Plugin.FateTweakSwitch.Value) return false;
+            if (stat == null) return;
+            bool uncapped = Plugin.IsUncapped(stat);
+            int overrideMax = 0;
+            bool overridden = !uncapped && Plugin.TryGetMaxOverride(stat, out overrideMax);
+            if (!uncapped && !overridden) return;
+
             Traverse traverse = Traverse.Create(__instance);
-            GameStat stat = traverse.Field("_stat").GetValue<GameStat>();
-            if (!Plugin.IsUncapped(stat)) return true;
-            int currentAdd = traverse.Field("_currentAdd").GetValue<int>();
-            if (currentAdd != 0)
-            {
-                stat.AddValue(currentAdd);
-            }
-            traverse.Field("_usedFatePoint").SetValue(0);
-            traverse.Field("_currentAdd").SetValue(0);
+            int currentValue = traverse.Field("_currentValue").GetValue<int>();
+            int maxValue = traverse.Field("_maxValue").GetValue<int>();
+            int ceiling = uncapped ? int.MaxValue : overrideMax;
+            int shown = Mathf.Clamp(currentValue + addValue, 0, ceiling);
+            int vanilla = Mathf.Clamp(currentValue + addValue, 0, maxValue);
+            if (shown == vanilla) return; // 没破限,显示本来就对
             Text valueText = traverse.Field("_valueText").GetValue<Text>();
-            valueText.text = stat.FinalValue.ToString();
-            valueText.color = traverse.Field("_defaultColor").GetValue<Color>();
-            traverse.Field("_default").SetValue(stat.FinalValue);
-            traverse.Method("UpdateReviewData").GetValue();
-            return false;
+            if (valueText != null)
+            {
+                valueText.text = shown.ToString();
+            }
         }
     }
 
     /// <summary>
-    /// 7b. 命运点界面按钮:原版在 初始+加点 >= Max 时禁用加号,名单内属性改为只受命运点余额限制。
-    ///     FateTweak 开启后按钮逻辑由 FateTweak.UpdatePropertyButton 全面接管。
+    /// 9. 勇者模式公平钳制(S_053 数值平衡):官方读取玩家六维 FinalValue 总和来强化敌人,
+    ///    破上限玩家会被额外针对。本补丁把"玩家侧六维"按原版上限 100 逐项封顶后再求和,
+    ///    敌人侧数值与公式完全不动(含官方自身的暗器重复/拳掌缺失,这里顺手修正为六项齐全)。
     /// </summary>
-    [HarmonyPatch(typeof(FateBonusProperty), nameof(FateBonusProperty.UpdateButton))]
-    internal static class FateUpdateButtonPatch
+    [HarmonyPatch(typeof(Mortal.Combat.S_053), "Init")]
+    internal static class BraveFairClampPatch
     {
-        private static void Postfix(FateBonusProperty __instance)
+        private static readonly CombatStatType[] SixStats =
         {
-            if (Plugin.FateTweakSwitch.Value) return;
-            Traverse traverse = Traverse.Create(__instance);
-            GameStat stat = traverse.Field("_stat").GetValue<GameStat>();
-            if (!Plugin.IsUncapped(stat)) return;
-            GameStat fateStat = traverse.Field("_fateStat").GetValue<GameStat>();
-            if (fateStat != null && fateStat.FinalValue > 0)
+            CombatStatType.體力, CombatStatType.內力, CombatStatType.輕功,
+            CombatStatType.刀劍, CombatStatType.拳掌, CombatStatType.暗器
+        };
+
+        private static bool Prefix(CombatStateEffectParameter param, ref IEnumerator __result)
+        {
+            if (!Plugin.Enabled.Value || !Plugin.BraveFairClamp.Value) return true;
+            __result = RunFair(param);
+            return false;
+        }
+
+        private static IEnumerator RunFair(CombatStateEffectParameter param)
+        {
+            string key = param.Effect.Key;
+            CombatActionController target = param.Target;   // 玩家侧
+            CombatActionController source = param.Source;   // 敌人侧
+            CombatStatController stat = source.Stat;
+            CombatStatBalanceData balance = source.Stat.Data.StatBalanceData;
+            // 与原版唯一的区别:玩家六维按原版上限 100 逐项封顶
+            int playerTotal = 0;
+            foreach (CombatStatType type in SixStats)
             {
-                traverse.Field("_addButton").GetValue<Button>().enabled = true;
+                playerTotal += Mathf.Min(target.Stat.GetStatItem(type).FinalValue, 100);
             }
+            float playerScale = playerTotal / 100f;
+            float enemyScale = source.Stat.GetSixStatTotalValue() / 100f;
+            float diff = Mathf.Max(0f, playerScale - enemyScale);
+            float over = Mathf.Max(0f, diff - balance.CatchUpThreshold);
+            if (over > 0f)
+            {
+                float curve = over / (over + balance.CatchUpK);
+                float ratio = balance.CatchUpMaxBonus * curve;
+                foreach (CombatStatType type in SixStats)
+                {
+                    CombatStatItem item = stat.GetStatItem(type);
+                    int add = Mathf.RoundToInt(item.FinalValue * ratio);
+                    item.AddModify(key, add);
+                }
+                Plugin.Log.LogInfo($"[勇者] 數值平衡(公平鉗制): 玩家六維(封頂後)={playerTotal} 敵方={Mathf.RoundToInt(enemyScale * 100f)} 加成比例={ratio:P1}");
+            }
+            yield return null;
         }
     }
 

@@ -5,6 +5,7 @@ using System.Reflection;
 using BepInEx;
 using HarmonyLib;
 using UnityEngine;
+using UnityEngine.UI;
 using UnityEngine.AddressableAssets;
 using UnityEngine.ResourceManagement.AsyncOperations;
 
@@ -152,19 +153,20 @@ namespace UncapSixStats
             }
             if (IsActiveNow())
             {
-                if (_reverse.ContainsKey(value)) return; // 已是肌肉版
-                if (_originalSprites.TryGetValue(value, out string key))
+                if (!_reverse.ContainsKey(value))
                 {
-                    Sprite muscle = LoadCached(key);
-                    if (muscle != null) value = muscle;
-                    return;
-                }
-                // 庭院常驻立绘的自学习:它持有的是序列化/动画赋值的原版 Sprite
-                if (IsCourtyardAvatar(img))
-                {
-                    RegisterOriginal(PlayerAvatarPanelPatch.NormalKey, value);
-                    Sprite muscle = LoadCached(PlayerAvatarPanelPatch.NormalKey);
-                    if (muscle != null) value = muscle;
+                    if (_originalSprites.TryGetValue(value, out string key))
+                    {
+                        Sprite muscle = LoadCached(key);
+                        if (muscle != null) value = muscle;
+                    }
+                    // 庭院常驻立绘的自学习:它持有的是序列化/动画赋值的原版 Sprite
+                    else if (IsCourtyardAvatar(img))
+                    {
+                        RegisterOriginal(PlayerAvatarPanelPatch.NormalKey, value);
+                        Sprite muscle = LoadCached(PlayerAvatarPanelPatch.NormalKey);
+                        if (muscle != null) value = muscle;
+                    }
                 }
             }
             else
@@ -175,7 +177,94 @@ namespace UncapSixStats
                     value = original;
                 }
             }
+            // 状态页小窗(RectMask2D 硬裁剪 385 宽)处理:肌肉版画布矮宽、preserveAspect 走
+            // 宽度撑满,385 窗口会切掉手臂 → 把 Mask 窗口加宽到 510(以人物为轴心),
+            // 立绘再放大 1.08(恰好卡在手臂不被重新切掉的上限内,比原版更宽更饱满),
+            // 同时把整个 Character 容器(立绘+名字称号)左移,避免右侧与雷达图相碰;
+            // 原版显示时全部恢复原状。
+            // 庭院养成界面立绘:肌肉版放大 1.15 倍(脚底为轴),逼近剧情立绘的观感。
+            ApplyStatusMaskAdjust(img, _reverse.ContainsKey(value));
+            ApplyCourtyardScale(img, _reverse.ContainsKey(value));
         }
+
+        private const float StatusMaskWidthMuscle = 510f;
+        private const float StatusAvatarMuscleScale = 1.08f;
+        private const float StatusCharacterShiftX = -40f;
+        // 庭院养成界面立绘放大倍率(改为增大 sizeDelta,不用 localScale:该物体的 pivot 不在底部,
+        // localScale 会把它推出屏幕)
+        private const float CourtyardMuscleScale = 1.15f;
+        // 每个 Mask/Character 实例记录原版宽度/位置,用于还原
+        private static readonly Dictionary<int, Vector2> _maskOrigSize = new Dictionary<int, Vector2>();
+        private static readonly Dictionary<int, Vector2> _maskOrigPos = new Dictionary<int, Vector2>();
+        private static readonly Dictionary<int, Vector2> _charOrigPos = new Dictionary<int, Vector2>();
+
+        private static void ApplyStatusMaskAdjust(UnityEngine.UI.Image img, bool isMuscle)
+        {
+            RectTransform maskRect = img.transform.parent as RectTransform;
+            if (maskRect == null || maskRect.name != "Mask") return;
+            if (maskRect.GetComponent<RectMask2D>() == null) return;
+            int id = maskRect.GetInstanceID();
+            Vector2 origSize;
+            if (!_maskOrigSize.TryGetValue(id, out origSize))
+            {
+                origSize = maskRect.sizeDelta;
+                _maskOrigSize[id] = origSize;
+                _maskOrigPos[id] = maskRect.anchoredPosition;
+            }
+            if (origSize.x <= 0f || origSize.x > 500f) return; // 只处理状态页小窗(385),社交页大窗不动
+            Vector2 origPos = _maskOrigPos[id];
+            if (isMuscle)
+            {
+                maskRect.sizeDelta = new Vector2(StatusMaskWidthMuscle, origSize.y);
+                maskRect.anchoredPosition = new Vector2(origPos.x + (origSize.x - StatusMaskWidthMuscle) / 2f, origPos.y);
+            }
+            else
+            {
+                maskRect.sizeDelta = origSize;
+                maskRect.anchoredPosition = origPos;
+            }
+
+            // 立绘放大 1.08(窗口加宽后仍不遮手臂),还原时为 1
+            RectTransform avatarRect = img.rectTransform;
+            float avatarScale = isMuscle ? StatusAvatarMuscleScale : 1f;
+            avatarRect.localScale = new Vector3(avatarScale, avatarScale, 1f);
+
+            // Character 容器(立绘+名字称号)左移,避开右侧雷达图
+            RectTransform charRect = maskRect.parent as RectTransform;
+            if (charRect != null && charRect.name == "Character")
+            {
+                int cid = charRect.GetInstanceID();
+                Vector2 charOrig;
+                if (!_charOrigPos.TryGetValue(cid, out charOrig))
+                {
+                    charOrig = charRect.anchoredPosition;
+                    _charOrigPos[cid] = charOrig;
+                }
+                charRect.anchoredPosition = isMuscle
+                    ? charOrig + new Vector2(StatusCharacterShiftX, 0f)
+                    : charOrig;
+            }
+        }
+
+        private static void ApplyCourtyardScale(UnityEngine.UI.Image img, bool isMuscle)
+        {
+            if (!IsCourtyardAvatar(img)) return;
+            RectTransform rect = img.rectTransform;
+            // 记录原版尺寸,肌肉版按比例放大 sizeDelta(pivot 位置不变,不会被推出屏幕)
+            if (!_courtyardOrigSize.TryGetValue(img.GetInstanceID(), out Vector2 orig))
+            {
+                orig = rect.sizeDelta;
+                _courtyardOrigSize[img.GetInstanceID()] = orig;
+            }
+            if (orig.x <= 0f || orig.y <= 0f) return;
+            float s = isMuscle ? CourtyardMuscleScale : 1f;
+            Vector2 target = orig * s;
+            if (rect.sizeDelta != target)
+            {
+                rect.sizeDelta = target;
+            }
+        }
+        private static readonly Dictionary<int, Vector2> _courtyardOrigSize = new Dictionary<int, Vector2>();
 
         /// <summary>
         /// 按 Image 的归属界面反查 Addressables key 并登记原版立绘(纯读取游戏数据,不碰加载):
@@ -552,6 +641,13 @@ namespace UncapSixStats
                             Sprite m = LoadCached(key);
                             if (m != null) img.sprite = m;
                         }
+                        // 已是肌肉版但缓存已重建(登记源更换淘汰了旧实例):改指新实例
+                        else if (_reverse.TryGetValue(img.sprite, out string mkey)
+                            && _cache.TryGetValue(mkey, out Sprite current) && current != null
+                            && img.sprite != current)
+                        {
+                            img.sprite = current;
+                        }
                     }
                     else
                     {
@@ -580,7 +676,10 @@ namespace UncapSixStats
                     UnityEngine.Object.Destroy(tex);
                     return null;
                 }
-                // 与原 mod(Binarizer)默认参数一致:左下 pivot、PPU=100、Tight 网格
+                // 与原 mod(Binarizer)默认参数一致:左下 pivot、PPU=100、Tight 网格。
+                // 故意保持 PNG 原生画布(1060×1400 比原版 1060×1700 矮宽):preserveAspect 界面里
+                // 肌肉版天生比原版显大一圈(这是本联动想要的视觉效果);
+                // 状态页小窗的 RectMask2D 截断由 ApplyStatusMaskScale 单独处理(见赋值拦截处)。
                 Sprite sprite = Sprite.Create(tex,
                     new Rect(0f, 0f, tex.width, tex.height),
                     new Vector2(0f, 0f), 100f, 0, SpriteMeshType.Tight);

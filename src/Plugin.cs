@@ -13,7 +13,7 @@ namespace UncapSixStats
     {
         public const string GUID = "com.lom.mod.uncapsixstats";
         public const string Name = "UncapSixStats";
-        public const string Version = "2.0.1";
+        public const string Version = "2.1.1";
 
         internal static ManualLogSource Log;
         internal static Plugin Instance;
@@ -31,8 +31,10 @@ namespace UncapSixStats
         internal static ConfigEntry<bool> DebugHotkey;
         internal static ConfigEntry<bool> MuscleSwitch;
         internal static ConfigEntry<bool> FateTweakSwitch;
-        internal static ConfigEntry<bool> FateSkipLeftoverWarning;
+        internal static ConfigEntry<bool> FateSkipStartConfirm;
         internal static ConfigEntry<string> FateUncapExtraTypes;
+        internal static ConfigEntry<string> MaxOverrideTypes;
+        internal static ConfigEntry<bool> BraveFairClamp;
 
         internal static Color OverlayColorValue = new Color(0.92f, 0.95f, 1f);
         // 天命分配破限变色:突破原设计上限后数值改为此色(与雷达破限层同基调的金色)
@@ -43,6 +45,8 @@ namespace UncapSixStats
         internal static readonly HashSet<int> ExtraTypes = new HashSet<int>();
         // 天命分配扩展解限:銀兩=3 鍛造=17 毒藥(煉丹)=18 武學點數=31
         internal static readonly HashSet<int> FateExtraTypes = new HashSet<int>();
+        // 自定义上限覆盖(不完全解除,只抬高上限):StatType ID → 新上限,默认 個人貢獻度20:500
+        internal static readonly Dictionary<int, int> MaxOverrides = new Dictionary<int, int>();
 
         // 全部武功类 StatType:刀劍100 暗器101 拳掌102 腿法103 奇門104 軟兵器105 槍棍106 內功107。
         // 注意:这些资产的 PropertyType 序列化值实为「一般」而非「武功」,不能靠 PropertyType 判定。
@@ -87,16 +91,21 @@ namespace UncapSixStats
             MuscleSwitch = Config.Bind("Muscle", "MusclePortrait", false,
                 "赵活:你在唐门只能算是个萝莉——true=任一六维(體力/內力/輕功/刀劍/暗器/拳掌)突破100后立绘切换为肌肉版,掉回100以下自动还原原版");
             FateTweakSwitch = Config.Bind("FateTweak", "Enabled", true,
-                "更好的天命点分配:true=继承界面加点立即落实、各项可减(只退已分配)、三页自由切换、复原=回到最初、确定=结束加点、剩余点数提示、长按连点、六维/武学点/银两/锻造/炼丹加点破限变色");
-            FateSkipLeftoverWarning = Config.Bind("FateTweak", "SkipLeftoverWarning", false,
-                "跳过剩余天命点提示:true=结束加点时不再提示未用完的点数(弹窗里勾选'之后不再提示'会自动置真)");
+                "更好的天命点分配(v2.1:官方已重写继承界面,本mod只补剩余功能):true=破限名单属性可在继承界面点过上限(金色显示)、加/减按钮长按连点");
+            FateSkipStartConfirm = Config.Bind("FateTweak", "SkipStartConfirm", false,
+                "跳过開始遊戲确认窗:true=点開始遊戲直接落实加点不弹确认(官方确认窗会提示未用完的点数,默认保留)");
             FateUncapExtraTypes = Config.Bind("FateTweak", "UncapExtraTypes", "3,17,18,31",
                 "天命分配额外解除加点上限的 GameStatType 数字ID,逗号分隔(默认 銀兩3/鍛造17/毒藥(煉丹)18/武學點數31;六维由总开关控制)");
+            MaxOverrideTypes = Config.Bind("General", "MaxOverrides", "20:500",
+                "自定义上限覆盖(不完全解限,只抬高上限):格式 ID:上限,ID:上限… 默认 20:500=個人貢獻度上限调到500;清空=关闭");
+            BraveFairClamp = Config.Bind("Brave", "ClampPlayerStat", true,
+                "勇者模式公平钳制:true=勇者模式的'遇强则强'读取我方六维时按原版上限100封顶(破上限不再被针对);false=按真实六维(官方原版行为)");
 
             MusclePortraits.Init();
 
             ParseExtraTypes();
             ParseFateExtraTypes();
+            ParseMaxOverrides();
             ParseOverlayColor();
 
             // 逐类隔离打补丁:任何一个补丁失败只影响自己并写日志,不再连坐
@@ -139,8 +148,33 @@ namespace UncapSixStats
             Log.LogInfo($"[UncapSixStats] 补丁应用:{applied} 类成功" +
                 (failed.Length > 0 ? ",失败:" + failed : ",无失败"));
             Log.LogInfo($"[UncapSixStats] 配置: Enabled={Enabled.Value}, LogFactor={RadarLogFactor.Value}, VisualMax={RadarVisualMax.Value}, "
-                + $"OverlayAlpha={OverlayAlpha.Value}, Pulse={OverlayPulse.Value}, CurveExtrapolate={CurveExtrapolate.Value}×{CurveExtrapolateFactor.Value}, DebugHotkey={DebugHotkey.Value}");
+                + $"OverlayAlpha={OverlayAlpha.Value}, Pulse={OverlayPulse.Value}, CurveExtrapolate={CurveExtrapolate.Value}×{CurveExtrapolateFactor.Value}, DebugHotkey={DebugHotkey.Value}"
+                + (MaxOverrides.Count > 0 ? ", 上限覆盖:" + DumpMaxOverrides() : ""));
             Log.LogInfo("[UncapSixStats] 读档/新游戏进游戏后:系统菜单(右上角齿轮)内注入「上限解除」按钮;F2 直接开关面板;F10 打印诊断");
+            SelfTestMaxOverride();
+        }
+
+        // 自定义上限覆盖自测:临时 GameStat 模拟 個人貢獻度(原上限200),验证覆盖上限生效
+        private void SelfTestMaxOverride()
+        {
+            try
+            {
+                int expected;
+                if (!MaxOverrides.TryGetValue(20, out expected)) return;
+                Mortal.Core.GameStat test = ScriptableObject.CreateInstance<Mortal.Core.GameStat>();
+                Traverse t = Traverse.Create(test);
+                t.Field("_type").SetValue((Mortal.Core.GameStatType)20);
+                t.Field("_min").SetValue(0);
+                t.Field("_max").SetValue(200);
+                test.SetValue(expected + 100);
+                int actual = test.FinalValue;
+                Log.LogInfo($"[自检] 上限覆盖自测: 個人貢獻度 写入{expected + 100} → FinalValue={actual}" + (actual == expected ? "(生效)" : "(未生效!)"));
+                UnityEngine.Object.Destroy(test);
+            }
+            catch (System.Exception e)
+            {
+                Log.LogWarning("[自检] 上限覆盖自测异常: " + e.Message);
+            }
         }
 
         // 自检用:Awake 标记物体是否还活着(Unity 假 null 语义)
@@ -187,6 +221,41 @@ namespace UncapSixStats
                     FateExtraTypes.Add(id);
                 }
             }
+        }
+
+        private void ParseMaxOverrides()
+        {
+            MaxOverrides.Clear();
+            string raw = MaxOverrideTypes.Value;
+            if (string.IsNullOrWhiteSpace(raw)) return;
+            foreach (string part in raw.Split(','))
+            {
+                string[] pair = part.Split(':');
+                if (pair.Length != 2) continue;
+                if (int.TryParse(pair[0].Trim(), out int id) && int.TryParse(pair[1].Trim(), out int max) && max > 0)
+                {
+                    MaxOverrides[id] = max;
+                }
+            }
+        }
+
+        private static string DumpMaxOverrides()
+        {
+            System.Text.StringBuilder sb = new System.Text.StringBuilder();
+            foreach (System.Collections.Generic.KeyValuePair<int, int> pair in MaxOverrides)
+            {
+                if (sb.Length > 0) sb.Append(',');
+                sb.Append(pair.Key).Append(':').Append(pair.Value);
+            }
+            return sb.ToString();
+        }
+
+        // 自定义上限覆盖:命中时返回新上限,否则 false。与总开关无关,配了就生效。
+        internal static bool TryGetMaxOverride(Mortal.Core.GameStat stat, out int overrideMax)
+        {
+            overrideMax = 0;
+            if (stat == null || MaxOverrides.Count == 0) return false;
+            return MaxOverrides.TryGetValue((int)stat.StatType, out overrideMax) && overrideMax > 0;
         }
 
         private static void ParseOverlayColor()

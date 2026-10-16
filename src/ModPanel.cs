@@ -27,11 +27,25 @@ namespace UncapSixStats
 
         internal static bool IsOpen => _panel != null && _panel.activeSelf;
 
+        // 面板创建的环境门槛:游戏这版会在标题场景加载前就初始化数值(GameStat.SetValue 提前触发),
+        // 那时建的 Canvas 会随临时场景被销毁(表现为 F2/按钮点了没反应)。
+        // 必须等真实场景里的 EventSystem 就绪再建;没就绪就不占 _created,等下一次触发。
+        private static bool EnvironmentReady()
+        {
+            return EventSystem.current != null;
+        }
+
         /// <summary>一次性创建入口,可从任何已证实会执行的游戏上下文调用(主线程)。</summary>
         internal static void TryCreate()
         {
-            if (_created) return;
+            // 已创建且存活:跳过(Unity 假 null 语义,_root/_panel 被场景销毁后 == null)
+            if (_created && _root != null && _panel != null) return;
+            if (!EnvironmentReady()) return;
             _created = true;
+            _root = null;
+            _panel = null;
+            _statusText = null;
+            _refreshers.Clear();
             LogEnvironmentProbe();
             try
             {

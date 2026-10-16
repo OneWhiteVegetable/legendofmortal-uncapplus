@@ -44,6 +44,14 @@ namespace UncapSixStats
             return (GetAsyncKeyState(vk) & 0x8000) != 0;
         }
 
+        // 短按可能落在 25ms 轮询间隔之外(只看到"已弹起"),补看 0x0001 位:
+        // 该位表示"上次调用本函数以来被按过",正好覆盖轮询间隙
+        private static bool Pressed(int vk)
+        {
+            short state = GetAsyncKeyState(vk);
+            return (state & 0x0001) != 0;
+        }
+
         private static bool GameInForeground()
         {
             IntPtr foreground = GetForegroundWindow();
@@ -70,7 +78,7 @@ namespace UncapSixStats
                             Plugin.Log.LogInfo("[UncapSixStats] 热键线程前台检测通过(线程存活)");
                         }
                         bool f2 = Down(VK_F2);
-                        if (f2 && !prevF2)
+                        if ((Pressed(VK_F2) || (f2 && !prevF2)))
                         {
                             LogFirstDetection("F2");
                             Plugin.PostToMain(ModPanelUI.Toggle);
@@ -78,7 +86,7 @@ namespace UncapSixStats
                         prevF2 = f2;
 
                         bool f10 = Down(VK_F10);
-                        if (f10 && !prevF10)
+                        if ((Pressed(VK_F10) || (f10 && !prevF10)))
                         {
                             LogFirstDetection("F10");
                             Plugin.PostToMain(() => Plugin.Instance.DumpDiagnosticsPublic());
@@ -88,7 +96,7 @@ namespace UncapSixStats
                         if (Plugin.DebugHotkey.Value)
                         {
                             bool f9 = Down(VK_F9);
-                            if (f9 && !prevF9)
+                            if ((Pressed(VK_F9) || (f9 && !prevF9)))
                             {
                                 LogFirstDetection("F9");
                                 Plugin.PostToMain(() => Plugin.Instance.AddStatPublic(Mortal.Core.GameStatType.武功拳掌, 10));

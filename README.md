@@ -1,4 +1,4 @@
-# 活侠传 六维/武功上限解除 legend-of-mortal-uncap-plus
+#活侠传**六维/武功上限解除legend-of-mortal-uncap-plus
 
 《活侠传》(Legend of Mortal) 三合一 Mod:**六维/武功上限解除 · 更好的天命点分配 · 肌肉立绘联动**。
 基于 BepInEx + Harmony,运行时注入,不修改游戏任何文件;自带游戏内设置面板,所有功能独立开关。
@@ -19,17 +19,15 @@ config panel; every feature has its own switch.
 - 曲线类加成(如血量)破限后按曲线尾部斜率继续增长,努力不白费(可关);
 - **不是改大 Max**,只放开数值钳制:90 点永远等于 90%,绝无"稀释变弱"。
 
-### 2. 更好的天命点分配(v2.0.0)
+### 2. 更好的天命点分配(v2.1,适配 2026-09「崆峒神威」大更新)
 
-通关/新结局/新死法攒下的天命点,开新周目时的继承加点全面重做:
+官方在大更新中已重写继承界面(三页自由切换/减号退费/剩余点数确认窗均已内置),
+本 mod 改为只补官方没有的功能:
 
-- **加点立即落实**,属性/人际/门派三页随便切换,不再有"未确认点数"拦截;
-- **每项都有减号**,只退你刚分配的点,初始值减不动;没分配过时减号不出现;
-- **性格按偏离初始值计费**:远离中立扣点、点回中立退点,来回 0 消耗;
-- **复原 = 回到最初**(三页全退,点数全返还);**确定 = 结束加点**;
-- 剩点没用完时弹窗提示"将转为命运点",可勾「之後不再提示」;
-- 六维/武學點數/銀兩/鍛造/煉丹加点可破原上限,**上限内蓝色、破限金色**;
-- **长按 + / − 连点**;
+- 六维/武學點數/銀兩/鍛造/煉丹(毒藥)加点可破原上限,**上限内蓝色、破限金色**,
+  进游戏后真实生效、读档不丢;
+- **长按 + / − 连点**(官方仍没有);
+- 可选跳过"开始游戏"确认窗(配置 `FateTweak/SkipStartConfirm`);
 - 点数严格守恒,`BepInEx/LogOutput.log` 留有 `[天命]` 审计行可对账。
 
 ### 3. 肌肉立绘联动
@@ -40,6 +38,13 @@ config panel; every feature has its own switch.
 
 ## 更新日志
 
+- **v2.1.1**(适配 2026-09「崆峒神威」大更新,游戏已升级 64 位,需 x64 加载器):
+  继承界面部分按官方新版重写;修复锻造/炼丹/武学点数继承破限进游戏失效;
+  肌肉立绘状态页加宽窗口+放大+左移避开雷达图,养成界面放大 1.15 倍,不再截断;
+  修复 F2/菜单按钮偶发无反应(面板过早创建被销毁)、菜单按钮与环境设定次级面板冲突;
+  新增个人贡献度上限覆盖(默认 200→500,`General/MaxOverrides` 可改);
+  新增左侧数值变动白条破限显示真实值;新增勇者模式公平钳制(`Brave/ClampPlayerStat`,
+  默认开:勇者模式读我方六维按原版上限 100 计算,破上限不被针对)。
 - **v2.0.1**:修复刀劍/拳掌/暗器等武功类属性无法突破 100(按 StatType 100-107 判定);
   修复团战(会战)全体单位立绘变白块、卡死无法移动;修复对话中数值破限/回落导致
   剧情卡死;修复天命界面打开时的日志报错。
@@ -107,12 +112,10 @@ dotnet build -c Release
 - **Uncap**: removes the 100-point cap on the six core stats and all martial-arts
   stats. The radar chart keeps its vanilla look and gains a subtle silver
   "over-cap" glow; curve-based conversions (e.g. HP) keep growing past 100.
-- **Better fate-point allocation** (the NG+ inheritance screen): instant apply,
-  minus buttons everywhere, fair personality pricing (pay only for distance
-  from your starting value), free tab switching, true "reset all", a
-  leftover-points reminder with a "don't show again" checkbox, over-cap values
-  allowed (blue = within the original cap, gold = beyond), and press-and-hold
-  to spam clicks. Every fate point is conserved and auditable in the log.
+- **Better fate-point allocation** (the NG+ inheritance screen, v2.1): the official
+  2026-09 update rewrote this screen; the mod now only adds what it still lacks —
+  over-cap allocation for money/forging/alchemy/martial points (gold display),
+  press-and-hold repeat clicking, and an optional skip of the start-game confirm.
 - **Muscle portrait swap**: break 100 in any core stat and the protagonist's
   portrait swaps to the muscle version everywhere; drop back below 100 and it
   reverts. Art from the Korean giga_player portrait pack.
